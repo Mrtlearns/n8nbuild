@@ -2,17 +2,62 @@
   "task-runners": [
     {
       "runner-type": "javascript",
-      "health-check-server-port": "5681",
+      "workdir": "/home/runner",
+      "command": "/usr/local/bin/node",
+      "args": [
+        "--disallow-code-generation-from-strings",
+        "--disable-proto=delete",
+        "/opt/runners/task-runner-javascript/dist/start.js"
+      ],
+      "health-check-server-port": 5681,
+      "allowed-env": [
+        "PATH",
+        "GENERIC_TIMEZONE",
+        "TZ",
+        "NODE_OPTIONS",
+        "N8N_RUNNERS_TASK_BROKER_URI",
+        "N8N_RUNNERS_AUTH_TOKEN",
+        "N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT",
+        "N8N_RUNNERS_TASK_TIMEOUT",
+        "N8N_RUNNERS_MAX_CONCURRENCY",
+        "N8N_SENTRY_DSN",
+        "N8N_VERSION",
+        "ENVIRONMENT",
+        "DEPLOYMENT_NAME",
+        "HOME"
+      ],
       "env-overrides": {
-        "NODE_FUNCTION_ALLOW_EXTERNAL": "pdf-lib,sharp,axios,lodash,date-fns,zod,cheerio,validator"
+        "NODE_FUNCTION_ALLOW_BUILTIN": "crypto",
+        "NODE_FUNCTION_ALLOW_EXTERNAL": "moment,pdf-lib,uuid",
+        "N8N_RUNNERS_HEALTH_CHECK_SERVER_HOST": "0.0.0.0"
       }
     },
     {
       "runner-type": "python",
-      "health-check-server-port": "5682",
+      "workdir": "/home/runner",
+      "command": "/opt/runners/task-runner-python/.venv/bin/python",
+      "args": ["-m", "src.main"],
+      "health-check-server-port": 5682,
+      "allowed-env": [
+        "PATH",
+        "GENERIC_TIMEZONE",
+        "TZ",
+        "N8N_RUNNERS_TASK_BROKER_URI",
+        "N8N_RUNNERS_AUTH_TOKEN",
+        "N8N_RUNNERS_LAUNCHER_LOG_LEVEL",
+        "N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT",
+        "N8N_RUNNERS_TASK_TIMEOUT",
+        "N8N_RUNNERS_MAX_CONCURRENCY",
+        "N8N_SENTRY_DSN",
+        "N8N_VERSION",
+        "ENVIRONMENT",
+        "DEPLOYMENT_NAME"
+      ],
       "env-overrides": {
-        "N8N_RUNNERS_STDLIB_ALLOW": "",
-        "N8N_RUNNERS_EXTERNAL_ALLOW": "pypdf,pymupdf,pillow,opencv-python-headless,pytesseract,ocrmypdf,pdfplumber,numpy"
+        "PYTHONPATH": "/opt/runners/task-runner-python",
+        "N8N_RUNNERS_STDLIB_ALLOW": "json,re,math,datetime,io,hashlib,base64,typing,pathlib",
+        "N8N_RUNNERS_EXTERNAL_ALLOW": "pypdf,pikepdf,pymupdf,numpy,pillow,opencv-python-headless,ocrmypdf",
+        "N8N_RUNNERS_HEALTH_CHECK_SERVER_HOST": "0.0.0.0"
       }
     }
   ]
