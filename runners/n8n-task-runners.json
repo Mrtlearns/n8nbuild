@@ -9,7 +9,7 @@
         "--disable-proto=delete",
         "/opt/runners/task-runner-javascript/dist/start.js"
       ],
-      "health-check-server-port": 5681,
+      "health-check-server-port": "5681",
       "allowed-env": [
         "PATH",
         "GENERIC_TIMEZONE",
@@ -37,7 +37,7 @@
       "workdir": "/home/runner",
       "command": "/opt/runners/task-runner-python/.venv/bin/python",
       "args": ["-m", "src.main"],
-      "health-check-server-port": 5682,
+      "health-check-server-port": "5682",
       "allowed-env": [
         "PATH",
         "GENERIC_TIMEZONE",
