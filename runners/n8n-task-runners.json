@@ -2,17 +2,17 @@
   "task-runners": [
     {
       "runner-type": "javascript",
+      "health-check-server-port": "5681",
       "env-overrides": {
-        "NODE_FUNCTION_ALLOW_BUILTIN": "crypto",
-        "NODE_FUNCTION_ALLOW_EXTERNAL": "pdf-lib,@pdf-lib/fontkit,uuid,date-fns,lodash,axios"
+        "NODE_FUNCTION_ALLOW_EXTERNAL": "pdf-lib,sharp,axios,lodash,date-fns,zod,cheerio,validator"
       }
     },
     {
       "runner-type": "python",
+      "health-check-server-port": "5682",
       "env-overrides": {
-        "PYTHONPATH": "/opt/runners/task-runner-python",
-        "N8N_RUNNERS_STDLIB_ALLOW": "json,base64,io,re,math,datetime,typing,collections,hashlib,uuid,pathlib,tempfile,subprocess,shlex",
-        "N8N_RUNNERS_EXTERNAL_ALLOW": "pypdf,pikepdf,requests,bs4,pydantic,ocrmypdf"
+        "N8N_RUNNERS_STDLIB_ALLOW": "",
+        "N8N_RUNNERS_EXTERNAL_ALLOW": "pypdf,pymupdf,pillow,opencv-python-headless,pytesseract,ocrmypdf,pdfplumber,numpy"
       }
     }
   ]
