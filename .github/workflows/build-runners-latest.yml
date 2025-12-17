@@ -1,0 +1,10 @@
+name: Build custom n8n runners (pdf-lib) - latest
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "GitHub Actions is working."
