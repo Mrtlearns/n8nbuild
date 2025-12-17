@@ -3,7 +3,16 @@
     {
       "runner-type": "javascript",
       "env-overrides": {
-        "NODE_FUNCTION_ALLOW_EXTERNAL": "pdf-lib"
+        "NODE_FUNCTION_ALLOW_BUILTIN": "crypto",
+        "NODE_FUNCTION_ALLOW_EXTERNAL": "pdf-lib,@pdf-lib/fontkit,uuid,date-fns,lodash,axios"
+      }
+    },
+    {
+      "runner-type": "python",
+      "env-overrides": {
+        "PYTHONPATH": "/opt/runners/task-runner-python",
+        "N8N_RUNNERS_STDLIB_ALLOW": "json,base64,io,re,math,datetime,typing,collections,hashlib,uuid,pathlib,tempfile,subprocess,shlex",
+        "N8N_RUNNERS_EXTERNAL_ALLOW": "pypdf,pikepdf,requests,bs4,pydantic,ocrmypdf"
       }
     }
   ]
