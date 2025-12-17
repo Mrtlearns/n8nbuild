@@ -3,7 +3,11 @@ name: Build custom n8n runners (pdf-lib) - latest
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 */6 * * *" # every 6 hours (adjust later if you want)
+    - cron: "17 */6 * * *" # every 6 hours
+  push:
+    paths:
+      - "runners/**"
+      - ".github/workflows/build-runners-latest.yml"
 
 permissions:
   contents: read
@@ -13,7 +17,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Docker/GHCR require lowercase image names; github.repository_owner can have uppercase.
+      - name: Set lowercase owner for GHCR
+        run: echo "OWNER_LC=${OWNER,,}" >> $GITHUB_ENV
+        env:
+          OWNER: ${{ github.repository_owner }}
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -31,4 +42,4 @@ jobs:
           context: ./runners
           push: true
           pull: true
-          tags: ghcr.io/${{ github.repository_owner }}/n8n-runners-pdfli_
+          tags: ghcr.io/${{ env.OWNER_LC }}/n8n-runners-pdflib:latest
