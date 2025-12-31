@@ -116,7 +116,7 @@ jobs:
       - name: Pull upstream n8nio/runners:latest (for ABI probe)
         run: docker pull docker.io/n8nio/runners:latest
 
-      - name: Get Python ABI (SOABI) from upstream runner image
+            - name: Get Python ABI (SOABI) from upstream runner image
         id: abi
         shell: bash
         run: |
@@ -150,6 +150,7 @@ PY
           echo "PY_VER=${PY_VER}"
           echo "SOABI=${SOABI}"
           echo "WHEEL_TAG=${SAFE_TAG}"
+
 
       # -------------------------
       # 3) Decide if we should do any work this run
