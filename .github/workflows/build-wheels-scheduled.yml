@@ -1,126 +1,323 @@
-name: Scheduled Build Runner
+# =========================
+# FILE: .github/workflows/runners-auto-latest.yml
+# =========================
+name: Build custom n8n runners (pdflib) - smart latest
 
 on:
-  schedule:
-    - cron: "17 */6 * * *"  # every 6 hours
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Force rebuild even if upstream n8nio/runners:latest digest is unchanged"
+        required: false
+        default: "false"
+  schedule:
+    - cron: "17 */6 * * *" # every 6 hours
   push:
-    branches:
-      - main
+    paths:
+      - "runners/**"
+      - ".github/workflows/runners-auto-latest.yml"
+      - "latest-runner-digest.txt"
+      - "wheel-metadata.json"
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  DOCKERHUB_REPO: "n8nio/runners"
+  DOCKERHUB_TAG: "latest"
+  GHCR_WHEELHOUSE_IMAGE: "ghcr.io/mrtlearns/n8n-runner-wheelhouse"
+  GHCR_RUNNERS_IMAGE: "ghcr.io/mrtlearns/n8n-runners-pdflib"
 
 jobs:
-  check-and-build:
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout
+        uses: actions/checkout@v5
         with:
-          # Fetch all history to read the stored digest file
           fetch-depth: 0
 
-      - name: Get remote n8n runner image digest
-        id: remote_digest
-        run: |
-          docker buildx imagetools inspect docker.io/n8nio/runners:latest --format "{{ (index .Manifests 0).Digest }}" > remote.txt
-          echo "REMOTE_DIGEST=$(cat remote.txt)" >> $GITHUB_OUTPUT
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Read stored runner digest
-        id: read_local
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # -------------------------
+      # 1) Detect upstream change: Docker Hub manifest digest for n8nio/runners:latest
+      #    Uses Docker Registry token flow + HEAD request and reads Docker-Content-Digest header.
+      # -------------------------
+      - name: Get remote digest for docker.io/n8nio/runners:latest (no pull)
+        id: upstream
+        shell: bash
         run: |
+          set -euo pipefail
+
+          # Get bearer token for public repo pull
+          TOKEN="$(curl -fsSL \
+            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${DOCKERHUB_REPO}:pull" \
+            | jq -r '.token')"
+
+          # HEAD the manifest; request manifest list v2 (multi-arch) digest
+          REMOTE_DIGEST="$(curl -fsSI \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+            "https://registry-1.docker.io/v2/${DOCKERHUB_REPO}/manifests/${DOCKERHUB_TAG}" \
+            | tr -d '\r' \
+            | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}' \
+            | tail -n 1)"
+
+          if [[ -z "${REMOTE_DIGEST}" ]]; then
+            echo "Failed to detect remote digest (empty)."
+            exit 1
+          fi
+
+          echo "REMOTE_DIGEST=${REMOTE_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Remote digest: ${REMOTE_DIGEST}"
+
+      - name: Read stored digest (repo file)
+        id: stored
+        shell: bash
+        run: |
+          set -euo pipefail
           if [[ -f latest-runner-digest.txt ]]; then
-            STORED=$(cat latest-runner-digest.txt)
+            STORED_DIGEST="$(cat latest-runner-digest.txt | tr -d '\r\n' || true)"
           else
-            STORED=""
+            STORED_DIGEST=""
           fi
-          echo "STORED_DIGEST=$STORED" >> $GITHUB_OUTPUT
+          echo "STORED_DIGEST=${STORED_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Stored digest: ${STORED_DIGEST}"
 
-      - name: Compare digests
-        id: compare_base
+      - name: Decide whether upstream changed
+        id: decide_upstream
+        shell: bash
         run: |
-          echo "stored: ${{ steps.read_local.outputs.STORED_DIGEST }}"
-          echo "remote: ${{ steps.remote_digest.outputs.REMOTE_DIGEST }}"
-          if [[ "${{ steps.read_local.outputs.STORED_DIGEST }}" = "${{ steps.remote_digest.outputs.REMOTE_DIGEST }}" ]]; then
-            echo "BASE_CHANGED=false" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          BASE_CHANGED="false"
+          if [[ "${{ steps.stored.outputs.STORED_DIGEST }}" != "${{ steps.upstream.outputs.REMOTE_DIGEST }}" ]]; then
+            BASE_CHANGED="true"
+          fi
+          echo "BASE_CHANGED=${BASE_CHANGED}" >> "$GITHUB_OUTPUT"
+          echo "BASE_CHANGED=${BASE_CHANGED}"
+
+      # -------------------------
+      # 2) Determine Python ABI from CURRENT upstream image (pull + inspect via python in the venv)
+      # -------------------------
+      - name: Pull upstream n8nio/runners:latest (for ABI probe)
+        run: docker pull docker.io/n8nio/runners:latest
+
+      - name: Get Python ABI (SOABI) from upstream runner image
+        id: abi
+        shell: bash
+        run: |
+          set -euo pipefail
+          ABI_JSON="$(docker run --rm docker.io/n8nio/runners:latest \
+            /opt/runners/task-runner-python/.venv/bin/python - <<'PY'
+            import json, sys, sysconfig
+            print(json.dumps({
+            "py": f"{sys.version_info.major}.{sys.version_info.minor}",
+            "soabi": (sysconfig.get_config_var("SOABI") or "")
+            }))
+            PY
+            )"
+          echo "${ABI_JSON}" > abi.json
+          PY_VER="$(jq -r '.py' abi.json)"
+          SOABI="$(jq -r '.soabi' abi.json)"
+
+          # Make a safe tag from soabi (fallback to pyX.Y if blank)
+          if [[ -z "${SOABI}" || "${SOABI}" == "null" ]]; then
+            SAFE_TAG="py${PY_VER}"
           else
-            echo "BASE_CHANGED=true" >> $GITHUB_OUTPUT
+            SAFE_TAG="$(echo "${SOABI}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g')"
           fi
 
-      - name: Check Python ABI for wheel reuse
-        id: check_abi
-        run: |
-          ABI=$(docker run --rm python:3.13-slim-bullseye \
-            python - << 'EOF'
-            import sysconfig
-            print(sysconfig.get_config_var("SOABI"))
-            EOF
-          )
-          echo "PYTHON_ABI=$ABI" >> $GITHUB_OUTPUT
+          echo "PY_VER=${PY_VER}" >> "$GITHUB_OUTPUT"
+          echo "SOABI=${SOABI}" >> "$GITHUB_OUTPUT"
+          echo "WHEEL_TAG=${SAFE_TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Read existing wheel metadata
-        id: read_wheel_meta
+          echo "PY_VER=${PY_VER}"
+          echo "SOABI=${SOABI}"
+          echo "WHEEL_TAG=${SAFE_TAG}"
+
+      # -------------------------
+      # 3) Decide if we should do any work this run
+      #    - On schedule: build ONLY if upstream base changed (or force=true)
+      #    - On push: always build (you changed code)
+      #    - On workflow_dispatch: build if force=true OR upstream changed
+      # -------------------------
+      - name: Compute SHOULD_BUILD gate
+        id: gate
+        shell: bash
         run: |
+          set -euo pipefail
+
+          EVENT="${{ github.event_name }}"
+          FORCE_INPUT="${{ github.event.inputs.force || 'false' }}"
+          BASE_CHANGED="${{ steps.decide_upstream.outputs.BASE_CHANGED }}"
+
+          SHOULD_BUILD="false"
+
+          if [[ "${EVENT}" == "push" ]]; then
+            SHOULD_BUILD="true"
+          elif [[ "${EVENT}" == "workflow_dispatch" ]]; then
+            if [[ "${FORCE_INPUT}" == "true" || "${BASE_CHANGED}" == "true" ]]; then
+              SHOULD_BUILD="true"
+            fi
+          else
+            # schedule
+            if [[ "${BASE_CHANGED}" == "true" ]]; then
+              SHOULD_BUILD="true"
+            fi
+          fi
+
+          echo "SHOULD_BUILD=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
+          echo "Event=${EVENT} Force=${FORCE_INPUT} BaseChanged=${BASE_CHANGED} => SHOULD_BUILD=${SHOULD_BUILD}"
+
+      - name: Exit early (no upstream change)
+        if: steps.gate.outputs.SHOULD_BUILD != 'true'
+        run: |
+          echo "No new docker.io/n8nio/runners:latest detected (and no push/manual force). Skipping build."
+          exit 0
+
+      # -------------------------
+      # 4) Decide if wheelhouse rebuild is needed (ABI/reqs changed OR wheelhouse tag missing)
+      # -------------------------
+      - name: Compute requirements hash
+        id: reqhash
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQ_SHA="$(sha256sum runners/requirements-wheels.txt | awk '{print $1}')"
+          echo "REQ_SHA=${REQ_SHA}" >> "$GITHUB_OUTPUT"
+          echo "REQ_SHA=${REQ_SHA}"
+
+      - name: Read stored wheel metadata (repo file)
+        id: wheelmeta
+        shell: bash
+        run: |
+          set -euo pipefail
           if [[ -f wheel-metadata.json ]]; then
-            WHEEL_ABI=$(jq -r .python_abi wheel-metadata.json)
+            STORED_SOABI="$(jq -r '.soabi // ""' wheel-metadata.json)"
+            STORED_REQ_SHA="$(jq -r '.requirements_sha256 // ""' wheel-metadata.json)"
           else
-            WHEEL_ABI=""
+            STORED_SOABI=""
+            STORED_REQ_SHA=""
           fi
-          echo "WHEEL_ABI=$WHEEL_ABI" >> $GITHUB_OUTPUT
+          echo "STORED_SOABI=${STORED_SOABI}" >> "$GITHUB_OUTPUT"
+          echo "STORED_REQ_SHA=${STORED_REQ_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Stored soabi=${STORED_SOABI}"
+          echo "Stored reqsha=${STORED_REQ_SHA}"
 
-      - name: Determine rebuild wheels
-        id: wheel_rebuild
+      - name: Check if wheelhouse image tag exists in GHCR
+        id: wheelhouse_exists
+        shell: bash
         run: |
-          if [[ "${{ steps.compare_base.outputs.BASE_CHANGED }}" = "true" ]]; then
-            echo "REBUILD_WHEELS=true" >> $GITHUB_OUTPUT
-          elif [[ "${{ steps.read_wheel_meta.outputs.WHEEL_ABI }}" != "${{ steps.check_abi.outputs.PYTHON_ABI }}" ]]; then
-            echo "REBUILD_WHEELS=true" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          TAG="${{ steps.abi.outputs.WHEEL_TAG }}"
+          if docker manifest inspect "${GHCR_WHEELHOUSE_IMAGE}:${TAG}" >/dev/null 2>&1; then
+            echo "EXISTS=true" >> "$GITHUB_OUTPUT"
           else
-            echo "REBUILD_WHEELS=false" >> $GITHUB_OUTPUT
+            echo "EXISTS=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Wheelhouse exists: ${{ steps.wheelhouse_exists.outputs.EXISTS }}"
+
+      - name: Decide wheelhouse rebuild
+        id: wheelhouse_gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEED="false"
+
+          # Rebuild if:
+          # - ABI changed
+          # - requirements changed
+          # - wheelhouse tag doesn't exist
+          if [[ "${{ steps.wheelmeta.outputs.STORED_SOABI }}" != "${{ steps.abi.outputs.SOABI }}" ]]; then
+            NEED="true"
+          fi
+          if [[ "${{ steps.wheelmeta.outputs.STORED_REQ_SHA }}" != "${{ steps.reqhash.outputs.REQ_SHA }}" ]]; then
+            NEED="true"
+          fi
+          if [[ "${{ steps.wheelhouse_exists.outputs.EXISTS }}" != "true" ]]; then
+            NEED="true"
           fi
 
-      - name: Build wheels (if needed)
-        if: steps.wheel_rebuild.outputs.REBUILD_WHEELS == 'true'
+          echo "REBUILD_WHEELHOUSE=${NEED}" >> "$GITHUB_OUTPUT"
+          echo "REBUILD_WHEELHOUSE=${NEED}"
+
+      # -------------------------
+      # 5) Build & push wheelhouse image (only when needed)
+      # -------------------------
+      - name: Build and push wheelhouse image
+        if: steps.wheelhouse_gate.outputs.REBUILD_WHEELHOUSE == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: runners/wheel-builder.Dockerfile
-          push: false
-          tags: wheel-builder:latest
+          file: runners/wheelhouse.Dockerfile
+          push: true
+          tags: |
+            ${{ env.GHCR_WHEELHOUSE_IMAGE }}:${{ steps.abi.outputs.WHEEL_TAG }}
+            ${{ env.GHCR_WHEELHOUSE_IMAGE }}:latest
 
-      - name: Save wheels locally
-        if: steps.wheel_rebuild.outputs.REBUILD_WHEELS == 'true'
-        run: |
-          rm -rf wheelhouse || true
-          mkdir -p wheelhouse
-          docker run --rm wheel-builder:latest \
-            sh -c "cp /wheels/* /wheels/metadata.json /out/" \
-            --volume "$PWD/wheelhouse:/out"
-
-      - name: Save updated metadata
-        if: steps.wheel_rebuild.outputs.REBUILD_WHEELS == 'true'
-        run: |
-          mv wheelhouse/metadata.json wheel-metadata.json
-
-      - name: Build runner image
-        if: steps.compare_base.outputs.BASE_CHANGED == 'true' || steps.wheel_rebuild.outputs.REBUILD_WHEELS == 'true'
+      # -------------------------
+      # 6) Build & push final runner image (uses wheelhouse via build-arg)
+      # -------------------------
+      - name: Build and push final runners image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: runners/Dockerfile
           push: true
-          tags: ghcr.io/mrtlearns/n8n-runners-pdflib:latest
+          build-args: |
+            WHEELHOUSE_IMAGE=${{ env.GHCR_WHEELHOUSE_IMAGE }}:${{ steps.abi.outputs.WHEEL_TAG }}
+          tags: |
+            ${{ env.GHCR_RUNNERS_IMAGE }}:latest
 
-      - name: Update stored runner digest
-        if: steps.compare_base.outputs.BASE_CHANGED == 'true'
+      # -------------------------
+      # 7) Update repo state files (digest + metadata) and commit
+      # -------------------------
+      - name: Update state files
+        shell: bash
         run: |
-          echo "${REMOTE_DIGEST}" > latest-runner-digest.txt
+          set -euo pipefail
 
-      - name: Commit digest and metadata
-        if: steps.compare_base.outputs.BASE_CHANGED == 'true' || steps.wheel_rebuild.outputs.REBUILD_WHEELS == 'true'
+          # Store new upstream digest (so future scheduled runs can skip)
+          echo "${{ steps.upstream.outputs.REMOTE_DIGEST }}" > latest-runner-digest.txt
+
+          # Update wheel metadata
+          cat > wheel-metadata.json <<EOF
+            {
+            "python_version": "${{ steps.abi.outputs.PY_VER }}",
+            "soabi": "${{ steps.abi.outputs.SOABI }}",
+            "wheel_tag": "${{ steps.abi.outputs.WHEEL_TAG }}",
+            "requirements_sha256": "${{ steps.reqhash.outputs.REQ_SHA }}",
+            "upstream_runners_digest": "${{ steps.upstream.outputs.REMOTE_DIGEST }}"
+            }
+            EOF
+
+      - name: Commit state updates
+        shell: bash
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git add latest-runner-digest.txt wheel-metadata.json
-          git commit -m "Update runner digest and wheel metadata"
+
+          # Commit only if changes exist
+          if git diff --cached --quiet; then
+            echo "No state changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Update upstream digest + wheel metadata"
           git push
