@@ -286,15 +286,19 @@ jobs:
 
           echo "${{ steps.upstream.outputs.REMOTE_DIGEST }}" > latest-runner-digest.txt
 
-          cat > wheel-metadata.json <<EOF
-{
-  "python_version": "${{ steps.abi.outputs.PY_VER }}",
-  "soabi": "${{ steps.abi.outputs.SOABI }}",
-  "wheel_tag": "${{ steps.abi.outputs.WHEEL_TAG }}",
-  "requirements_sha256": "${{ steps.reqhash.outputs.REQ_SHA }}",
-  "upstream_runners_digest": "${{ steps.upstream.outputs.REMOTE_DIGEST }}"
-}
-EOF
+          jq -n \
+            --arg python_version "${{ steps.abi.outputs.PY_VER }}" \
+            --arg soabi "${{ steps.abi.outputs.SOABI }}" \
+            --arg wheel_tag "${{ steps.abi.outputs.WHEEL_TAG }}" \
+            --arg requirements_sha256 "${{ steps.reqhash.outputs.REQ_SHA }}" \
+            --arg upstream_runners_digest "${{ steps.upstream.outputs.REMOTE_DIGEST }}" \
+            '{
+              python_version: $python_version,
+              soabi: $soabi,
+              wheel_tag: $wheel_tag,
+              requirements_sha256: $requirements_sha256,
+              upstream_runners_digest: $upstream_runners_digest
+            }' > wheel-metadata.json
 
       - name: Commit state updates
         shell: bash
