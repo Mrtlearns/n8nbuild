@@ -1,28 +1,26 @@
-# Final stage starts from official n8n runners
+# v1.0
+# Summary: Final runners image: stays on n8nio/runners:latest but injects prebuilt wheels from a wheelhouse image.
+# syntax=docker/dockerfile:1.7
+
+ARG WHEELHOUSE_IMAGE
+FROM ${WHEELHOUSE_IMAGE} AS wheels
+
 FROM docker.io/n8nio/runners:latest
 
-USER root
+# Copy wheels in
+COPY --from=wheels /wheelhouse /tmp/wheelhouse
 
-# Copy wheels from GitHub Actions cache or artifact
-# this will be filled in by GH Actions
-COPY wheelhouse /wheelhouse
+# Install wheels into the runner venv (no compiling here)
+RUN cd /opt/runners/task-runner-python && \
+    /opt/runners/task-runner-python/.venv/bin/pip install --no-cache-dir --no-index \
+      --find-links=/tmp/wheelhouse \
+      -r /opt/runners/task-runner-python/requirements.txt || true
 
-# Install runtime dependencies required by some wheels
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-     libjpeg62-turbo libpng16-16 zlib1g \
-  && rm -rf /var/lib/apt/lists/*
+# Install your additional packages strictly from wheelhouse
+# (keep this list aligned with your allowlist)
+RUN /opt/runners/task-runner-python/.venv/bin/pip install --no-cache-dir --no-index \
+      --find-links=/tmp/wheelhouse \
+      pypdf pillow numpy pandas opencv-python-headless
 
-# Install from prebuilt wheels only
-RUN cd /opt/runners/task-runner-python \
-     && pip install --no-index --find-links=/wheelhouse \
-         opencv-python-headless \
-         numpy \
-         pandas \
-         pillow \
-         pypdf
-
-# Copy your runners config
-COPY n8n-task-runners.json /etc/n8n-task-runners.json
-
-USER runner
+# Your runner config
+COPY runners/n8n-task-runners.json /etc/n8n-task-runners.json
