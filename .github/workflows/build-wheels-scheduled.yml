@@ -23,8 +23,7 @@ jobs:
       - name: Get remote n8n runner image digest
         id: remote_digest
         run: |
-          docker buildx imagetools inspect docker.io/n8nio/runners:latest \
-            --format "{{ index .Manifests 0 }.Digest }}" > remote.txt
+          docker buildx imagetools inspect docker.io/n8nio/runners:latest --format "{{ (index .Manifests 0).Digest }}" > remote.txt
           echo "REMOTE_DIGEST=$(cat remote.txt)" >> $GITHUB_OUTPUT
 
       - name: Read stored runner digest
