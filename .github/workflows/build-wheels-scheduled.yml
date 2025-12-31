@@ -116,7 +116,7 @@ jobs:
       - name: Pull upstream n8nio/runners:latest (for ABI probe)
         run: docker pull docker.io/n8nio/runners:latest
 
-            - name: Get Python ABI (SOABI) from upstream runner image
+      - name: Get Python ABI (SOABI) from upstream runner image
         id: abi
         shell: bash
         run: |
