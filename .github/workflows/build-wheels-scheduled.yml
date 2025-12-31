@@ -1,5 +1,5 @@
 # =========================
-# FILE: .github/workflows/runners-auto-latest.yml
+# FILE: .github/workflows/build-wheels-scheduled.yml
 # =========================
 name: Build custom n8n runners (pdflib) - smart latest
 
@@ -15,9 +15,9 @@ on:
   push:
     paths:
       - "runners/**"
-      - ".github/workflows/runners-auto-latest.yml"
-      - "latest-runner-digest.txt"
-      - "wheel-metadata.json"
+      - ".github/workflows/build-wheels-scheduled.yml"
+      # IMPORTANT: do NOT include latest-runner-digest.txt or wheel-metadata.json here,
+      # because the workflow commits those files itself.
 
 permissions:
   contents: write
@@ -32,6 +32,9 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    # Extra guard in case something ever causes a push-trigger loop
+    if: github.event_name != 'push' || github.actor != 'github-actions[bot]'
 
     steps:
       - name: Checkout
@@ -54,7 +57,7 @@ jobs:
 
       # -------------------------
       # 1) Detect upstream change: Docker Hub manifest digest for n8nio/runners:latest
-      #    Uses Docker Registry token flow + HEAD request and reads Docker-Content-Digest header.
+      #    Uses Registry token flow + HEAD request and reads Docker-Content-Digest header.
       # -------------------------
       - name: Get remote digest for docker.io/n8nio/runners:latest (no pull)
         id: upstream
@@ -62,12 +65,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Get bearer token for public repo pull
           TOKEN="$(curl -fsSL \
             "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${DOCKERHUB_REPO}:pull" \
             | jq -r '.token')"
 
-          # HEAD the manifest; request manifest list v2 (multi-arch) digest
           REMOTE_DIGEST="$(curl -fsSI \
             -H "Authorization: Bearer ${TOKEN}" \
             -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
@@ -90,7 +91,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -f latest-runner-digest.txt ]]; then
-            STORED_DIGEST="$(cat latest-runner-digest.txt | tr -d '\r\n' || true)"
+            STORED_DIGEST="$(tr -d '\r\n' < latest-runner-digest.txt || true)"
           else
             STORED_DIGEST=""
           fi
@@ -120,20 +121,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ABI_JSON="$(docker run --rm docker.io/n8nio/runners:latest \
-            /opt/runners/task-runner-python/.venv/bin/python - <<'PY'
-            import json, sys, sysconfig
-            print(json.dumps({
-            "py": f"{sys.version_info.major}.{sys.version_info.minor}",
-            "soabi": (sysconfig.get_config_var("SOABI") or "")
-            }))
-            PY
-            )"
+
+          ABI_JSON="$(
+            docker run --rm docker.io/n8nio/runners:latest \
+              /opt/runners/task-runner-python/.venv/bin/python - <<'PY'
+import json, sys, sysconfig
+print(json.dumps({
+  "py": f"{sys.version_info.major}.{sys.version_info.minor}",
+  "soabi": (sysconfig.get_config_var("SOABI") or "")
+}))
+PY
+          )"
+
           echo "${ABI_JSON}" > abi.json
           PY_VER="$(jq -r '.py' abi.json)"
           SOABI="$(jq -r '.soabi' abi.json)"
 
-          # Make a safe tag from soabi (fallback to pyX.Y if blank)
           if [[ -z "${SOABI}" || "${SOABI}" == "null" ]]; then
             SAFE_TAG="py${PY_VER}"
           else
@@ -150,7 +153,7 @@ jobs:
 
       # -------------------------
       # 3) Decide if we should do any work this run
-      #    - On schedule: build ONLY if upstream base changed (or force=true)
+      #    - On schedule: build ONLY if upstream base changed
       #    - On push: always build (you changed code)
       #    - On workflow_dispatch: build if force=true OR upstream changed
       # -------------------------
@@ -173,7 +176,6 @@ jobs:
               SHOULD_BUILD="true"
             fi
           else
-            # schedule
             if [[ "${BASE_CHANGED}" == "true" ]]; then
               SHOULD_BUILD="true"
             fi
@@ -228,7 +230,6 @@ jobs:
           else
             echo "EXISTS=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "Wheelhouse exists: ${{ steps.wheelhouse_exists.outputs.EXISTS }}"
 
       - name: Decide wheelhouse rebuild
         id: wheelhouse_gate
@@ -237,10 +238,6 @@ jobs:
           set -euo pipefail
           NEED="false"
 
-          # Rebuild if:
-          # - ABI changed
-          # - requirements changed
-          # - wheelhouse tag doesn't exist
           if [[ "${{ steps.wheelmeta.outputs.STORED_SOABI }}" != "${{ steps.abi.outputs.SOABI }}" ]]; then
             NEED="true"
           fi
@@ -290,19 +287,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Store new upstream digest (so future scheduled runs can skip)
           echo "${{ steps.upstream.outputs.REMOTE_DIGEST }}" > latest-runner-digest.txt
 
-          # Update wheel metadata
           cat > wheel-metadata.json <<EOF
-            {
-            "python_version": "${{ steps.abi.outputs.PY_VER }}",
-            "soabi": "${{ steps.abi.outputs.SOABI }}",
-            "wheel_tag": "${{ steps.abi.outputs.WHEEL_TAG }}",
-            "requirements_sha256": "${{ steps.reqhash.outputs.REQ_SHA }}",
-            "upstream_runners_digest": "${{ steps.upstream.outputs.REMOTE_DIGEST }}"
-            }
-            EOF
+{
+  "python_version": "${{ steps.abi.outputs.PY_VER }}",
+  "soabi": "${{ steps.abi.outputs.SOABI }}",
+  "wheel_tag": "${{ steps.abi.outputs.WHEEL_TAG }}",
+  "requirements_sha256": "${{ steps.reqhash.outputs.REQ_SHA }}",
+  "upstream_runners_digest": "${{ steps.upstream.outputs.REMOTE_DIGEST }}"
+}
+EOF
 
       - name: Commit state updates
         shell: bash
@@ -313,11 +308,10 @@ jobs:
 
           git add latest-runner-digest.txt wheel-metadata.json
 
-          # Commit only if changes exist
           if git diff --cached --quiet; then
             echo "No state changes to commit."
             exit 0
           fi
 
-          git commit -m "Update upstream digest + wheel metadata"
+          git commit -m "Update upstream digest + wheel metadata [skip ci]"
           git push
