@@ -53,9 +53,9 @@ jobs:
         run: |
           ABI=$(docker run --rm python:3.13-slim-bullseye \
             python - << 'EOF'
-import sysconfig
-print(sysconfig.get_config_var("SOABI"))
-EOF
+            import sysconfig
+            print(sysconfig.get_config_var("SOABI"))
+            EOF
           )
           echo "PYTHON_ABI=$ABI" >> $GITHUB_OUTPUT
 
