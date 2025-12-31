@@ -1,0 +1,59 @@
+name: Build Python Wheels
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-wheels:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Extract current runner Python ABI
+        id: detect
+        run: |
+          PY_ABI=$(docker run --rm python:3.13-slim-bullseye \
+             python -c "import sysconfig; print(sysconfig.get_config_var('SOABI'))")
+          echo "abi=$PY_ABI" >> $GITHUB_OUTPUT
+
+      - name: Check existing metadata
+        id: check
+        run: |
+          if [[ -f ./wheelhouse/metadata.json ]]; then
+            PREV_ABI=$(jq -r .python_abi ./wheelhouse/metadata.json)
+          else
+            PREV_ABI=""
+          fi
+
+          if [[ "$PREV_ABI" == "${{ steps.detect.outputs.abi }}" ]]; then
+            echo "SKIP_BUILD=true" >> $GITHUB_OUTPUT
+          else
+            echo "SKIP_BUILD=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build wheels
+        if: steps.check.outputs.SKIP_BUILD == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: runners/wheel-builder.Dockerfile
+          push: false
+          tags: wheel-builder:latest
+
+      - name: Save wheels
+        if: steps.check.outputs.SKIP_BUILD == 'false'
+        run: |
+          mkdir -p wheelhouse
+          docker run --rm wheel-builder:latest \
+              cp /wheels/* /wheels/metadata.json /wheels
+          mv /wheels/* ./wheelhouse/
+
+      - name: Upload wheels artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-wheels
+          path: wheelhouse/
