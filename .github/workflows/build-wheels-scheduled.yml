@@ -1,0 +1,127 @@
+name: Scheduled Build Runner
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"  # every 6 hours
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Fetch all history to read the stored digest file
+          fetch-depth: 0
+
+      - name: Get remote n8n runner image digest
+        id: remote_digest
+        run: |
+          docker buildx imagetools inspect docker.io/n8nio/runners:latest \
+            --format "{{ index .Manifests 0 }.Digest }}" > remote.txt
+          echo "REMOTE_DIGEST=$(cat remote.txt)" >> $GITHUB_OUTPUT
+
+      - name: Read stored runner digest
+        id: read_local
+        run: |
+          if [[ -f latest-runner-digest.txt ]]; then
+            STORED=$(cat latest-runner-digest.txt)
+          else
+            STORED=""
+          fi
+          echo "STORED_DIGEST=$STORED" >> $GITHUB_OUTPUT
+
+      - name: Compare digests
+        id: compare_base
+        run: |
+          echo "stored: ${{ steps.read_local.outputs.STORED_DIGEST }}"
+          echo "remote: ${{ steps.remote_digest.outputs.REMOTE_DIGEST }}"
+          if [[ "${{ steps.read_local.outputs.STORED_DIGEST }}" = "${{ steps.remote_digest.outputs.REMOTE_DIGEST }}" ]]; then
+            echo "BASE_CHANGED=false" >> $GITHUB_OUTPUT
+          else
+            echo "BASE_CHANGED=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check Python ABI for wheel reuse
+        id: check_abi
+        run: |
+          ABI=$(docker run --rm python:3.13-slim-bullseye \
+            python - << 'EOF'
+import sysconfig
+print(sysconfig.get_config_var("SOABI"))
+EOF
+          )
+          echo "PYTHON_ABI=$ABI" >> $GITHUB_OUTPUT
+
+      - name: Read existing wheel metadata
+        id: read_wheel_meta
+        run: |
+          if [[ -f wheel-metadata.json ]]; then
+            WHEEL_ABI=$(jq -r .python_abi wheel-metadata.json)
+          else
+            WHEEL_ABI=""
+          fi
+          echo "WHEEL_ABI=$WHEEL_ABI" >> $GITHUB_OUTPUT
+
+      - name: Determine rebuild wheels
+        id: wheel_rebuild
+        run: |
+          if [[ "${{ steps.compare_base.outputs.BASE_CHANGED }}" = "true" ]]; then
+            echo "REBUILD_WHEELS=true" >> $GITHUB_OUTPUT
+          elif [[ "${{ steps.read_wheel_meta.outputs.WHEEL_ABI }}" != "${{ steps.check_abi.outputs.PYTHON_ABI }}" ]]; then
+            echo "REBUILD_WHEELS=true" >> $GITHUB_OUTPUT
+          else
+            echo "REBUILD_WHEELS=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build wheels (if needed)
+        if: steps.wheel_rebuild.outputs.REBUILD_WHEELS == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: runners/wheel-builder.Dockerfile
+          push: false
+          tags: wheel-builder:latest
+
+      - name: Save wheels locally
+        if: steps.wheel_rebuild.outputs.REBUILD_WHEELS == 'true'
+        run: |
+          rm -rf wheelhouse || true
+          mkdir -p wheelhouse
+          docker run --rm wheel-builder:latest \
+            sh -c "cp /wheels/* /wheels/metadata.json /out/" \
+            --volume "$PWD/wheelhouse:/out"
+
+      - name: Save updated metadata
+        if: steps.wheel_rebuild.outputs.REBUILD_WHEELS == 'true'
+        run: |
+          mv wheelhouse/metadata.json wheel-metadata.json
+
+      - name: Build runner image
+        if: steps.compare_base.outputs.BASE_CHANGED == 'true' || steps.wheel_rebuild.outputs.REBUILD_WHEELS == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: runners/Dockerfile
+          push: true
+          tags: ghcr.io/mrtlearns/n8n-runners-pdflib:latest
+
+      - name: Update stored runner digest
+        if: steps.compare_base.outputs.BASE_CHANGED == 'true'
+        run: |
+          echo "${REMOTE_DIGEST}" > latest-runner-digest.txt
+
+      - name: Commit digest and metadata
+        if: steps.compare_base.outputs.BASE_CHANGED == 'true' || steps.wheel_rebuild.outputs.REBUILD_WHEELS == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add latest-runner-digest.txt wheel-metadata.json
+          git commit -m "Update runner digest and wheel metadata"
+          git push
