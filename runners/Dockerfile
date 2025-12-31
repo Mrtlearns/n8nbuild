@@ -1,27 +1,28 @@
-# v1.3 — Switch to n8n-supported dependency install (pnpm/uv); remove apt/apk OS installs that break when base image changes.
-
-FROM n8nio/runners:latest
+# Final stage starts from official n8n runners
+FROM docker.io/n8nio/runners:latest
 
 USER root
 
-# --- JavaScript runner dependencies (Code node JS) ---
-# n8n docs: extend runners by installing packages inside the task-runner-javascript directory
-RUN cd /opt/runners/task-runner-javascript && pnpm add \
-  pdf-lib \
-  uuid \
-  moment \
-  sharp
+# Copy wheels from GitHub Actions cache or artifact
+# this will be filled in by GH Actions
+COPY wheelhouse /wheelhouse
 
-# --- Python runner dependencies (Code node Python) ---
-# n8n docs: install python packages inside task-runner-python directory via uv pip
-RUN cd /opt/runners/task-runner-python && uv pip install \
-  pypdf \
-  pillow \
-  numpy \
-  pandas \
-  opencv-python-headless
+# Install runtime dependencies required by some wheels
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+     libjpeg62-turbo libpng16-16 zlib1g \
+  && rm -rf /var/lib/apt/lists/*
 
-# Custom allowlist config (must be valid JSON)
+# Install from prebuilt wheels only
+RUN cd /opt/runners/task-runner-python \
+     && pip install --no-index --find-links=/wheelhouse \
+         opencv-python-headless \
+         numpy \
+         pandas \
+         pillow \
+         pypdf
+
+# Copy your runners config
 COPY n8n-task-runners.json /etc/n8n-task-runners.json
 
 USER runner
