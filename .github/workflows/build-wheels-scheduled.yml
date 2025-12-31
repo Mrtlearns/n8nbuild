@@ -124,19 +124,15 @@ jobs:
 
           ABI_JSON="$(
             docker run --rm docker.io/n8nio/runners:latest \
-              /opt/runners/task-runner-python/.venv/bin/python - <<'PY'
-import json, sys, sysconfig
-print(json.dumps({
-  "py": f"{sys.version_info.major}.{sys.version_info.minor}",
-  "soabi": (sysconfig.get_config_var("SOABI") or "")
-}))
-PY
+              /opt/runners/task-runner-python/.venv/bin/python -c \
+              'import json,sys,sysconfig; print(json.dumps({"py":f"{sys.version_info.major}.{sys.version_info.minor}","soabi":(sysconfig.get_config_var("SOABI") or "")}))'
           )"
 
           echo "${ABI_JSON}" > abi.json
           PY_VER="$(jq -r '.py' abi.json)"
           SOABI="$(jq -r '.soabi' abi.json)"
 
+          # Build a stable tag for the wheelhouse from SOABI (fallback to pyX.Y)
           if [[ -z "${SOABI}" || "${SOABI}" == "null" ]]; then
             SAFE_TAG="py${PY_VER}"
           else
