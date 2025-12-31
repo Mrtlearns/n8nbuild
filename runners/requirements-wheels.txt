@@ -1,5 +1,5 @@
+# v1.0.0 - Python wheels we build/cache; OpenCV comes from apk (py3-opencv/opencv)
 pypdf
 pillow
 numpy
 pandas
-opencv-python-headless
