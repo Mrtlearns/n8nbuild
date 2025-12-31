@@ -1,0 +1,29 @@
+name: Build n8n Runner Image
+
+on:
+  workflow_run:
+    workflows: ["Build Python Wheels"]
+    types:
+      - completed
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: [build-wheels]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: python-wheels
+          path: wheelhouse/
+
+      - name: Build runner image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: runners/Dockerfile
+          push: true
+          tags: ghcr.io/mrtlearns/n8n-runners-pdflib:latest
