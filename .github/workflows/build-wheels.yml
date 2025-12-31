@@ -1,10 +1,12 @@
 name: Build Python Wheels
 
 on:
+  schedule:
+    - cron: "17 */6 * * *" # every 6 hours
+  workflow_dispatch:
   push:
     branches:
       - main
-  workflow_dispatch:
 
 jobs:
   build-wheels:
