@@ -1,6 +1,4 @@
-# =========================
-# FILE: .github/workflows/build-wheels-scheduled.yml
-# =========================
+# v1.0.0 - Smart rebuild only when n8nio/runners:latest digest changes; ABI-tagged wheelhouse; builds final runners image from wheelhouse.
 name: Build custom n8n runners (pdflib) - smart latest
 
 on:
@@ -16,7 +14,7 @@ on:
     paths:
       - "runners/**"
       - ".github/workflows/build-wheels-scheduled.yml"
-      # IMPORTANT: do NOT include latest-runner-digest.txt or wheel-metadata.json here,
+      # IMPORTANT: do NOT include latest-runner-digest.txt or wheel-metadata.json here
       # because the workflow commits those files itself.
 
 permissions:
@@ -33,7 +31,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    # Extra guard in case something ever causes a push-trigger loop
+    # Guard against self-trigger loop if the bot commits state files
     if: github.event_name != 'push' || github.actor != 'github-actions[bot]'
 
     steps:
@@ -55,10 +53,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # -------------------------
-      # 1) Detect upstream change: Docker Hub manifest digest for n8nio/runners:latest
-      #    Uses Registry token flow + HEAD request and reads Docker-Content-Digest header.
-      # -------------------------
+      # ------------------------------------------------------------
+      # 1) Detect upstream digest without pulling (manifest-list digest)
+      # ------------------------------------------------------------
       - name: Get remote digest for docker.io/n8nio/runners:latest (no pull)
         id: upstream
         shell: bash
@@ -110,9 +107,10 @@ jobs:
           echo "BASE_CHANGED=${BASE_CHANGED}" >> "$GITHUB_OUTPUT"
           echo "BASE_CHANGED=${BASE_CHANGED}"
 
-      # -------------------------
-      # 2) Determine Python ABI from CURRENT upstream image (pull + inspect via python in the venv)
-      # -------------------------
+      # ------------------------------------------------------------
+      # 2) Pull upstream (only when needed later) and probe Python ABI (SOABI)
+      #    IMPORTANT: override entrypoint, otherwise runners image complains about auth token.
+      # ------------------------------------------------------------
       - name: Pull upstream n8nio/runners:latest (for ABI probe)
         run: docker pull docker.io/n8nio/runners:latest
 
@@ -122,38 +120,39 @@ jobs:
         run: |
           set -euo pipefail
 
-          ABI_JSON="$(
-            docker run --rm \
-              --entrypoint /opt/runners/task-runner-python/.venv/bin/python \
-              docker.io/n8nio/runners:latest \
-              -c 'import json,sys,sysconfig; print(json.dumps({"py":f"{sys.version_info.major}.{sys.version_info.minor}","soabi":(sysconfig.get_config_var("SOABI") or "")}))'
+          ABI_JSON="$(docker run --rm \
+            --entrypoint /opt/runners/task-runner-python/.venv/bin/python \
+            docker.io/n8nio/runners:latest \
+            -c 'import json,sys,sysconfig; print(json.dumps({"py":f"{sys.version_info.major}.{sys.version_info.minor}","soabi":(sysconfig.get_config_var("SOABI") or "")}))'
           )"
 
-          echo "${ABI_JSON}" > abi.json
+          echo "${ABI_JSON}" | tee abi.json
           PY_VER="$(jq -r '.py' abi.json)"
           SOABI="$(jq -r '.soabi' abi.json)"
 
+          # Safe tag for wheels by ABI (+ arch so amd64/arm64 don't collide)
+          ARCH="$(uname -m | tr '[:upper:]' '[:lower:]')"
           if [[ -z "${SOABI}" || "${SOABI}" == "null" ]]; then
-            SAFE_TAG="py${PY_VER}"
+            SAFE_ABI="py${PY_VER}"
           else
-            SAFE_TAG="$(echo "${SOABI}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g')"
+            SAFE_ABI="$(echo "${SOABI}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g')"
           fi
+          WHEEL_TAG="${SAFE_ABI}-${ARCH}"
 
           echo "PY_VER=${PY_VER}" >> "$GITHUB_OUTPUT"
           echo "SOABI=${SOABI}" >> "$GITHUB_OUTPUT"
-          echo "WHEEL_TAG=${SAFE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "WHEEL_TAG=${WHEEL_TAG}" >> "$GITHUB_OUTPUT"
 
           echo "PY_VER=${PY_VER}"
           echo "SOABI=${SOABI}"
-          echo "WHEEL_TAG=${SAFE_TAG}"
+          echo "WHEEL_TAG=${WHEEL_TAG}"
 
-
-      # -------------------------
+      # ------------------------------------------------------------
       # 3) Decide if we should do any work this run
-      #    - On schedule: build ONLY if upstream base changed
-      #    - On push: always build (you changed code)
-      #    - On workflow_dispatch: build if force=true OR upstream changed
-      # -------------------------
+      #    - schedule: only if upstream base changed
+      #    - push: always (code changed)
+      #    - manual: if force=true OR upstream changed
+      # ------------------------------------------------------------
       - name: Compute SHOULD_BUILD gate
         id: gate
         shell: bash
@@ -187,9 +186,9 @@ jobs:
           echo "No new docker.io/n8nio/runners:latest detected (and no push/manual force). Skipping build."
           exit 0
 
-      # -------------------------
-      # 4) Decide if wheelhouse rebuild is needed (ABI/reqs changed OR wheelhouse tag missing)
-      # -------------------------
+      # ------------------------------------------------------------
+      # 4) Wheelhouse rebuild gate (ABI changed OR requirements changed OR wheelhouse tag missing)
+      # ------------------------------------------------------------
       - name: Compute requirements hash
         id: reqhash
         shell: bash
@@ -227,6 +226,7 @@ jobs:
           else
             echo "EXISTS=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "Wheelhouse exists: $(cat $GITHUB_OUTPUT | grep EXISTS= | tail -n1 || true)"
 
       - name: Decide wheelhouse rebuild
         id: wheelhouse_gate
@@ -248,9 +248,9 @@ jobs:
           echo "REBUILD_WHEELHOUSE=${NEED}" >> "$GITHUB_OUTPUT"
           echo "REBUILD_WHEELHOUSE=${NEED}"
 
-      # -------------------------
-      # 5) Build & push wheelhouse image (only when needed)
-      # -------------------------
+      # ------------------------------------------------------------
+      # 5) Build & push wheelhouse (only when needed)
+      # ------------------------------------------------------------
       - name: Build and push wheelhouse image
         if: steps.wheelhouse_gate.outputs.REBUILD_WHEELHOUSE == 'true'
         uses: docker/build-push-action@v6
@@ -262,9 +262,9 @@ jobs:
             ${{ env.GHCR_WHEELHOUSE_IMAGE }}:${{ steps.abi.outputs.WHEEL_TAG }}
             ${{ env.GHCR_WHEELHOUSE_IMAGE }}:latest
 
-      # -------------------------
-      # 6) Build & push final runner image (uses wheelhouse via build-arg)
-      # -------------------------
+      # ------------------------------------------------------------
+      # 6) Build & push final runners image (always when SHOULD_BUILD=true)
+      # ------------------------------------------------------------
       - name: Build and push final runners image
         uses: docker/build-push-action@v6
         with:
@@ -276,9 +276,9 @@ jobs:
           tags: |
             ${{ env.GHCR_RUNNERS_IMAGE }}:latest
 
-      # -------------------------
-      # 7) Update repo state files (digest + metadata) and commit
-      # -------------------------
+      # ------------------------------------------------------------
+      # 7) Update state files + commit (digest + wheel metadata)
+      # ------------------------------------------------------------
       - name: Update state files
         shell: bash
         run: |
@@ -286,19 +286,15 @@ jobs:
 
           echo "${{ steps.upstream.outputs.REMOTE_DIGEST }}" > latest-runner-digest.txt
 
-          jq -n \
-            --arg python_version "${{ steps.abi.outputs.PY_VER }}" \
-            --arg soabi "${{ steps.abi.outputs.SOABI }}" \
-            --arg wheel_tag "${{ steps.abi.outputs.WHEEL_TAG }}" \
-            --arg requirements_sha256 "${{ steps.reqhash.outputs.REQ_SHA }}" \
-            --arg upstream_runners_digest "${{ steps.upstream.outputs.REMOTE_DIGEST }}" \
-            '{
-              python_version: $python_version,
-              soabi: $soabi,
-              wheel_tag: $wheel_tag,
-              requirements_sha256: $requirements_sha256,
-              upstream_runners_digest: $upstream_runners_digest
-            }' > wheel-metadata.json
+          cat > wheel-metadata.json <<EOF
+          {
+            "python_version": "${{ steps.abi.outputs.PY_VER }}",
+            "soabi": "${{ steps.abi.outputs.SOABI }}",
+            "wheel_tag": "${{ steps.abi.outputs.WHEEL_TAG }}",
+            "requirements_sha256": "${{ steps.reqhash.outputs.REQ_SHA }}",
+            "upstream_runners_digest": "${{ steps.upstream.outputs.REMOTE_DIGEST }}"
+          }
+          EOF
 
       - name: Commit state updates
         shell: bash
