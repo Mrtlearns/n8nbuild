@@ -49,7 +49,7 @@
       "env-overrides": {
         "PYTHONPATH": "/opt/runners/task-runner-python",
         "N8N_RUNNERS_STDLIB_ALLOW": "json,math,re,datetime,io,os,pathlib",
-        "N8N_RUNNERS_EXTERNAL_ALLOW": "pypdf,pillow,numpy,pandas,opencv-python-headless"
+        "N8N_RUNNERS_EXTERNAL_ALLOW": "pypdf,pillow,numpy,pandas,cv2"
       }
     }
   ]
