@@ -1,72 +1,33 @@
-# =========================
-# FILE: runners/wheelhouse.Dockerfile
-# =========================
+# v1.0
+# Summary: Build a wheelhouse image (no dependency on WHEELHOUSE_IMAGE). Produces /wheelhouse/*.whl for later injection.
 # syntax=docker/dockerfile:1.7
-FROM docker.io/n8nio/runners:latest AS build
 
-USER root
+FROM docker.io/n8nio/runners:latest AS builder
 
-# Build toolchain for Alpine/musl (required when opencv wheels are not available)
+# Install build tooling (musl/alpine case) so heavy deps can compile if wheels aren't available
+# NOTE: adjust package manager depending on base; n8nio/runners is currently alpine-based in your logs.
 RUN apk add --no-cache \
     build-base \
     cmake \
     ninja \
-    pkgconf \
+    linux-headers \
     python3-dev \
     musl-dev \
-    linux-headers \
+    libffi-dev \
+    openssl-dev \
     jpeg-dev \
-    zlib-dev \
-    libpng-dev \
-    tiff-dev
+    zlib-dev
 
-WORKDIR /opt/runners/task-runner-python
+WORKDIR /tmp/wheels
 
-# Only rebuild wheels if requirements-wheels.txt changes (good caching behavior)
+# Your wheel requirements list (you already reference this in workflow)
 COPY runners/requirements-wheels.txt /tmp/requirements-wheels.txt
 
-# Build wheels into /wheelhouse (do NOT install into venv here)
-RUN mkdir -p /wheelhouse \
- && uv pip install --upgrade pip setuptools wheel \
- && uv pip wheel --wheel-dir /wheelhouse -r /tmp/requirements-wheels.txt \
- && cp /tmp/requirements-wheels.txt /wheelhouse/requirements-wheels.txt
+# Build wheels into /wheelhouse
+RUN /opt/runners/task-runner-python/.venv/bin/pip wheel --no-cache-dir \
+      -r /tmp/requirements-wheels.txt \
+      -w /wheelhouse
 
-# Minimal runtime image that just carries the wheelhouse as an OCI artifact container
-FROM alpine:3.20
-COPY --from=build /wheelhouse /wheelhouse
-
-
-# =========================
-# FILE: runners/Dockerfile
-# =========================
-# syntax=docker/dockerfile:1.7
-ARG WHEELHOUSE_IMAGE=ghcr.io/mrtlearns/n8n-runner-wheelhouse:latest
-FROM ${WHEELHOUSE_IMAGE} AS wheels
-
-FROM docker.io/n8nio/runners:latest
-
-USER root
-
-# Runtime tools you wanted (adjust packages as needed)
-RUN apk add --no-cache \
-    qpdf \
-    ghostscript \
-    imagemagick \
-    tesseract-ocr \
-    tesseract-ocr-data-eng \
-    unpaper \
-    libjpeg-turbo \
-    zlib \
-    libpng \
-    tiff
-
-COPY --from=wheels /wheelhouse /wheelhouse
-
-# Install Python packages from wheelhouse only (no build during final image)
-RUN cd /opt/runners/task-runner-python \
- && uv pip install --no-index --find-links=/wheelhouse -r /wheelhouse/requirements-wheels.txt
-
-# Runner config
-COPY runners/n8n-task-runners.json /etc/n8n-task-runners.json
-
-USER runner
+# Final image just contains wheel artifacts
+FROM scratch AS wheelhouse
+COPY --from=builder /wheelhouse /wheelhouse
