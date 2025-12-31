@@ -1,14 +1,5 @@
 name: Build custom n8n runners (pdf-lib) - latest
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: "17 */6 * * *" # every 6 hours
-  push:
-    paths:
-      - "runners/**"
-      - ".github/workflows/build-runners-latest.yml"
-
 permissions:
   contents: read
   packages: write
