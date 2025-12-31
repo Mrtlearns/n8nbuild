@@ -1,5 +1,5 @@
-opencv-python-headless
+pypdf
+pillow
 numpy
 pandas
-pillow
-pypdf
+opencv-python-headless
