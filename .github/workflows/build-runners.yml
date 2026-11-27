@@ -1,0 +1,79 @@
+# Builds ghcr.io/mrtlearns/n8n-runners-pdflib:<N8N_VERSION> from runners/ on every push to main
+# that touches runners/ (or this file), and on manual dispatch. No schedule, no :latest.
+# N8N_VERSION comes from the `ARG N8N_VERSION=` default in runners/Dockerfile.
+# The image that is smoke-tested is exactly the image that is pushed.
+name: Build n8n runners image (pdf-lib)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "runners/**"
+      - ".github/workflows/build-runners.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-runners
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/mrtlearns/n8n-runners-pdflib
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Read N8N_VERSION from runners/Dockerfile
+        id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="$(sed -n 's/^ARG N8N_VERSION=\([0-9][0-9.]*\)[[:space:]]*$/\1/p' runners/Dockerfile | head -n1)"
+          if [[ -z "$V" ]]; then echo "::error::ARG N8N_VERSION=<x.y.z> not found in runners/Dockerfile"; exit 1; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "N8N_VERSION=$V"
+
+      - name: Build
+        run: |
+          docker build --pull \
+            --build-arg N8N_VERSION=${{ steps.v.outputs.version }} \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            -t runners-under-test:ci runners
+
+      - name: Smoke test (pdf-lib, fontkit, Python libs, PDF tools, runner json, version)
+        run: |
+          chmod -R a+rX runners
+          docker run --rm --entrypoint sh -v "$PWD/runners:/ci:ro" runners-under-test:ci /ci/smoke.sh ${{ steps.v.outputs.version }}
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push :<version> and immutable :<version>-<sha>
+        id: push
+        shell: bash
+        run: |
+          set -euo pipefail
+          V=${{ steps.v.outputs.version }}; S=${{ steps.v.outputs.short }}
+          for t in "$V" "$V-$S"; do docker tag runners-under-test:ci "$IMAGE:$t"; docker push "$IMAGE:$t"; done
+          D="$(docker image inspect "$IMAGE:$V" --format '{{index .RepoDigests 0}}')"
+          echo "digest=$D" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Pushed"
+            echo "- \`$IMAGE:$V\`"
+            echo "- \`$IMAGE:$V-$S\`"
+            echo "- digest: \`$D\`"
+            echo
+            echo "Pin deployments by tag or digest; rollback = previous digest (see README)."
+          } >> "$GITHUB_STEP_SUMMARY"
