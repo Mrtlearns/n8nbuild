@@ -3,7 +3,7 @@
 #
 # N8N_VERSION must equal the version of the n8n main/worker containers that use these runners.
 # Bump it TOGETHER with the n8n main/worker image pin (see README). CI reads the default below.
-ARG N8N_VERSION=2.49.7
+ARG N8N_VERSION=2.49.8
 
 # n8nio/runners (2.49.x) ships WITHOUT the apk binary (the apk db + repositories are kept),
 # so borrow apk.static from alpine for one layer and delete it again.
